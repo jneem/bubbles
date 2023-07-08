@@ -6,11 +6,10 @@
 module Main where
 
 import Bubbles
-import Numeric.LinearAlgebra.Static
 
 main :: IO ()
 main =
   let
-    cl = standard $ vec4 0 2 3 4
+    cl = standard [0, 2, 3, 4]
   in
   putStrLn $ concatMap show $ cameraDir cl : toNamedPovCells cl

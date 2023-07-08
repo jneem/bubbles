@@ -3,65 +3,71 @@
 {-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TypeOperators #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Bubbles (Cell (..), VoronoiCluster, toNamedPovCells, Pov, standard, colinear, dilate, cameraDir,
 ) where
 
-import GHC.TypeLits
-import Numeric.LinearAlgebra.Data ((!))
-import Numeric.LinearAlgebra.Static
 import Text.Printf
-import qualified Numeric.LinearAlgebra.Static as LA
-import Numeric.LinearAlgebra (toList, normalize)
 import Data.List ()
 import Data.List.HT (removeEach)
+import Numeric.LinearAlgebra.HMatrix
 
-data Cell n = Cell
-  { center :: R n,
+type Vec = Vector Double
+data Cell = Cell
+  { center :: Vec,
     pressure :: Double
   }
   deriving (Show)
 
-type VoronoiCluster n = [Cell n]
+type VoronoiCluster = [Cell]
 
-const4 :: Double -> R 4
-const4 = constVec
+pressures :: VoronoiCluster -> Vec
+pressures cl = vector $ map pressure cl
 
-const3 :: Double -> R 3
-const3 = constVec
+centers :: VoronoiCluster -> Matrix Double
+centers cl = fromRows $ map center cl
 
-constVec :: KnownNat n => Double -> R n
-constVec = konst
+dimension :: VoronoiCluster -> Int
+dimension cl = size $ center $ head cl
 
 -- Multiply a vector by a scalar
-times :: KnownNat n => R n -> Double -> R n
-times v x = v * constVec x
+times :: Vec -> Double -> Vec
+times v x = v * konst x (size v)
 
-proj :: forall m n. (KnownNat m, KnownNat n, m <= n) => L m n
-proj =
-  let a :: L m n = fst (splitRows (eye - 0.25)) in
-  let (_, _, a') = svdFlat a in
-  tr a'
+-- An isometry from E_n to R_n, as a (n+1) \times n matrix
+projE :: Int -> Matrix Double
+projE n =
+  let
+    a = dropColumns 1 (ident (n + 1) - 1 / (fromIntegral n + 1)) 
+    (u, _, _) = thinSVD a
+  in
+  u
+
+mean :: [Double] -> Double
+mean xs = sum xs / fromIntegral (length xs)
 
 -- Make a standard bubble cluster with given pressures
-standard :: R 4 -> VoronoiCluster 3
+standard :: [Double] -> VoronoiCluster
 standard pressures =
-  let ks = pressures - konst (mean pressures) in
-  let proj3 :: L 3 4 = proj in
-  let ks' = proj3 #> ks in
-  let m = sqrtm (eye / 2 + ks' `outer` ks') in
-  let m' = tr proj3 LA.<> m in
-  let mkCell c k = Cell { center = c, pressure = k } in
-  let pressuresList = toList $ extract ks in
+  let
+    n = length pressures
+    ks = vector pressures - scalar (mean pressures)
+    proj = projE 3
+    ks' = proj #> ks
+    m = sqrtm (ident n / 2 + ks' `outer` ks')
+    m' = tr proj `mul` m
+    mkCell c k = Cell { center = c, pressure = k }
+    pressuresList = toList ks
+  in
   zipWith mkCell (toRows m') pressuresList
 
-colinear :: R 4 -> VoronoiCluster 3
+colinear :: [Double] -> VoronoiCluster
 colinear pressures =
   let
-    ks = pressures - const4 (mean pressures)
-    ksList = toList (extract ks)
+    ks = vector pressures - scalar (mean pressures)
+    ksList = toList ks
     -- We take the first center at the origin, and then for each cell, what is
     -- its distance to the center?
     centerDists = map (\k -> sqrt (1 + (k - head ksList)^(2::Int))) (tail ksList)
@@ -74,8 +80,8 @@ colinear pressures =
       (tail centerDists)
       prevDists
     angle = scanl (+) 0 prevAngle
-    centers = vec3 0 0 0 : zipWith
-      (\r theta -> vec3 (r * cos theta) 0 (r * sin theta))
+    centers = vector [0, 0, 0] : zipWith
+      (\r theta -> vector [r * cos theta, 0, r * sin theta])
       centerDists
       angle
   in
@@ -83,13 +89,19 @@ colinear pressures =
   -- actually be non-adjacent.
   zipWith (\c p -> Cell { center = c, pressure = p }) centers ksList
 
-gram :: forall n. KnownNat n => Double -> VoronoiCluster n -> VoronoiCluster n
-gram t cl = error "todo"
-  where
-    projE :: L n n = eye - 0.25
+-- FIXME: This assumes the input cluster has n+1 cells in dimension n. It would be nice to allow
+-- m <= n + 1 cells...
+-- gram :: forall n. (KnownNat n, KnownNat (n+1), n <= n+1) => Double -> VoronoiCluster n -> VoronoiCluster n
+-- gram t cl = error "todo"
+--   where
+--     ks :: R (n + 1) = pressures cl
+--     nNat = natVal (center $ head cl)
+--     eyeE :: L (n + 1) (n + 1) = eye - konst (1 / fromIntegral nNat)
+--     targetGram = eyeE / 2 + ks `outer` ks
+--     projE :: L n n = eye - 0.25
 
 -- Apply the "dilation" Mobius transform in the direction `theta`
-dilate :: KnownNat n => R n -> VoronoiCluster n -> VoronoiCluster n
+dilate :: Vec -> VoronoiCluster -> VoronoiCluster
 dilate theta cl =
   let
     t = norm_2 theta
@@ -105,16 +117,16 @@ dilate theta cl =
 
 -- A halfspace is a set of the form {x: <x, n> < t}, where "n" is the "normal"
 -- and "t" is the "threshold."
-data HalfSpace n = HalfSpace
-  { normal :: R n,
+data HalfSpace = HalfSpace
+  { normal :: Vec,
     threshold :: Double
   }
 
-type Convex n = [HalfSpace n]
+type Convex = [HalfSpace]
 
-newtype SphericalCell = SphericalCell (Convex 3)
+newtype SphericalCell = SphericalCell Convex
 
-cellToConvex :: forall n. KnownNat n => Cell n -> [Cell n] -> Convex n
+cellToConvex :: Cell -> [Cell] -> Convex
 cellToConvex cell =
   map halfspace
   where
@@ -124,7 +136,7 @@ cellToConvex cell =
           threshold = pressure other - pressure cell
         }
 
-convexes :: forall n. KnownNat n => VoronoiCluster n -> [Convex n]
+convexes :: VoronoiCluster -> [Convex]
 convexes vc = map (uncurry cellToConvex) (removeEach vc)
  
 data Pov
@@ -135,14 +147,14 @@ data Pov
 class ToPov a where
   toPov :: a -> Pov
 
-instance ToPov (HalfSpace 3) where
+instance ToPov HalfSpace where
   toPov HalfSpace {normal = n', threshold = t'} =
     Line (printf "plane { <%.3f, %.3f, %.3f>, %.3f }" (n ! 0) (n ! 1) (n ! 2) t)
     where
-      n = normalize $ unwrap n'
+      n = normalize n'
       t = t' / norm_2 n'
 
-instance ToPov (Convex 3) where
+instance ToPov Convex where
   toPov hs = Block "intersection" $ map toPov hs
 
 instance ToPov SphericalCell where
@@ -150,10 +162,10 @@ instance ToPov SphericalCell where
     let unitSphere = Line "sphere { <0, 0, 0>, 1 }" in
     Block "intersection" [ unitSphere, toPov cvx ]
 
-toPovCells :: VoronoiCluster 3 -> [Pov]
+toPovCells :: VoronoiCluster -> [Pov]
 toPovCells vc = map (toPov . SphericalCell) (convexes vc)
 
-toNamedPovCells :: VoronoiCluster 3 -> [Pov]
+toNamedPovCells :: VoronoiCluster -> [Pov]
 toNamedPovCells vc =
   let
     cells = toPovCells vc
@@ -169,13 +181,13 @@ toNamedPovCells vc =
       in
         mapFrom 0 f
 
-cameraDir :: VoronoiCluster 3 -> Pov
+cameraDir :: VoronoiCluster -> Pov
 cameraDir vc =
   let
-    dir' = sum $ map (\c -> center c * const3 (pressure c)) vc
+    dir' = sum $ map (\c -> center c * scalar (pressure c)) vc
     dir = if norm_2 dir' < 0.01
-      then extract $ vec3 0 0 1
-      else normalize $ extract dir'
+      then vector [0, 0, 1]
+      else dir'
   in
     Decl "dir" (Line (printf "<%.3f, %.3f, %.3f>" (dir ! 0) (dir ! 1) (dir ! 2)))
 

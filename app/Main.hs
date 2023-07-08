@@ -11,6 +11,6 @@ import Numeric.LinearAlgebra.Static
 main :: IO ()
 main =
   let
-    cl = colinear $ vec4 0 2 3 4
+    cl = standard $ vec4 0 2 3 4
   in
-  putStrLn $ concatMap show $ toNamedPovCells cl
+  putStrLn $ concatMap show $ cameraDir cl : toNamedPovCells cl

@@ -1,5 +1,5 @@
 #include "colors.inc"
-#include "geom.inc"
+#include "standard.inc"
 background { color Cyan }
 camera {
 	location -2.5 * #dir

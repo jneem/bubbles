@@ -6,13 +6,25 @@
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 {-# LANGUAGE FlexibleContexts #-}
 
-module Bubbles (Cell (..), VoronoiCluster, toNamedPovCells, Pov, standard, colinear, dilate, cameraDir,
+module Bubbles (
+  Cell (..),
+  VoronoiCluster,
+  toNamedPovCells,
+  Pov,
+  Vec,
+  standard, colinear, dilate, cameraDir,
+  pressures, centers, dimension, numCells,
+  gram,
+  fixedDistances,
+  mySqrt, compensator
 ) where
 
 import Text.Printf
 import Data.List ()
 import Data.List.HT (removeEach)
 import Numeric.LinearAlgebra.HMatrix
+import Debug.Trace
+import Prelude hiding ((<>))
 
 type Vec = Vector Double
 data Cell = Cell
@@ -31,6 +43,9 @@ centers cl = fromRows $ map center cl
 
 dimension :: VoronoiCluster -> Int
 dimension cl = size $ center $ head cl
+
+numCells :: VoronoiCluster -> Int
+numCells = length
 
 -- Multiply a vector by a scalar
 times :: Vec -> Double -> Vec
@@ -63,6 +78,35 @@ standard pressures =
   in
   zipWith mkCell (toRows m') pressuresList
 
+dbg :: Show a => a -> a
+dbg x = traceShow x x
+
+dbg' :: Show a => String -> a -> a
+dbg' s x = traceShow (s,x) x
+
+
+-- Find the two points (in the span of x and y) that are fixed distances from two given points.
+fixedDistances :: Vec -> Double -> Vec -> Double -> (Vec, Vec)
+fixedDistances x dx y dy =
+  if isNaN sintheta
+  then error ("invalid distances: " ++ show dx ++ " " ++ show dy ++ " " ++ show d)
+  else
+    (x + scaledDiff * scalar costheta + rot scaledDiff * scalar sintheta,
+     x + scaledDiff * scalar costheta - rot scaledDiff * scalar sintheta)
+  where
+    rot z =
+      let
+        x' = normalize x
+        y' = normalize (y - x' * scalar (x' <.> y))
+      in
+        (y' `outer` x' - x' `outer` y') #> z
+    diff = y - x
+    d = norm_2 diff
+    sq x = x * x
+    costheta = (sq dx + sq d - sq dy) / (2 * dx * d)
+    sintheta = sqrt (1 - sq costheta)
+    scaledDiff = normalize diff * scalar dx
+
 colinear :: [Double] -> VoronoiCluster
 colinear pressures =
   let
@@ -89,16 +133,44 @@ colinear pressures =
   -- actually be non-adjacent.
   zipWith (\c p -> Cell { center = c, pressure = p }) centers ksList
 
--- FIXME: This assumes the input cluster has n+1 cells in dimension n. It would be nice to allow
--- m <= n + 1 cells...
--- gram :: forall n. (KnownNat n, KnownNat (n+1), n <= n+1) => Double -> VoronoiCluster n -> VoronoiCluster n
--- gram t cl = error "todo"
---   where
---     ks :: R (n + 1) = pressures cl
---     nNat = natVal (center $ head cl)
---     eyeE :: L (n + 1) (n + 1) = eye - konst (1 / fromIntegral nNat)
---     targetGram = eyeE / 2 + ks `outer` ks
---     projE :: L n n = eye - 0.25
+mySqrt :: Matrix Double -> Matrix Double
+mySqrt m =
+  let
+    (d, v) = eigSH (sym m)
+    d' = cmap (\x -> sqrt (max x 0)) (dbg d)
+  in
+    if any (\elt -> elt < -1e-3) $ toList d
+    then error "negative eigenvalues"
+    else v <> dbg (diag d') <> tr v
+
+-- Given a matrix `M`, returns an orthogonal matrix `W` so that `|M| W = M`.
+-- This is used to make the gram perturbation continuous.
+compensator :: Matrix Double -> Matrix Double
+compensator m =
+  let (u, _, v) = svd m in u <> tr v
+
+lift :: VoronoiCluster -> VoronoiCluster
+lift cl =
+  let
+    n = numCells cl
+    d = dimension cl
+    zeros = konst 0 (n - d)
+  in
+    if d >= n
+    then error "cannot lift, d >= n"
+    else [ Cell { center = vjoin [c, zeros], pressure = k } | Cell { center = c, pressure = k } <- cl ]
+
+gram :: Double -> VoronoiCluster -> VoronoiCluster
+gram t cl' = [ Cell { center = c, pressure = k } | (c, k) <- zip newCenters $ toList ks ]
+  where
+    cl = lift cl'
+    n = numCells cl
+    ks = pressures cl
+    eyeE = ident n - (1 / fromIntegral n)
+    targetGram = eyeE / 2 + ks `outer` ks
+    initGram = centers cl `mul` tr (centers cl)
+    gram = initGram * scalar (1 - t) + targetGram * scalar t
+    newCenters = toRows $ dbg (mySqrt gram <> compensator (centers cl))
 
 -- Apply the "dilation" Mobius transform in the direction `theta`
 dilate :: Vec -> VoronoiCluster -> VoronoiCluster
@@ -187,7 +259,7 @@ cameraDir vc =
     dir' = sum $ map (\c -> center c * scalar (pressure c)) vc
     dir = if norm_2 dir' < 0.01
       then vector [0, 0, 1]
-      else dir'
+      else normalize dir'
   in
     Decl "dir" (Line (printf "<%.3f, %.3f, %.3f>" (dir ! 0) (dir ! 1) (dir ! 2)))
 

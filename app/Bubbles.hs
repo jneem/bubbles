@@ -16,7 +16,8 @@ module Bubbles (
   pressures, centers, dimension, numCells,
   gram,
   fixedDistances,
-  mySqrt, compensator
+  mySqrt, compensator,
+  project, firstThree
 ) where
 
 import Text.Printf
@@ -25,6 +26,7 @@ import Data.List.HT (removeEach)
 import Numeric.LinearAlgebra.HMatrix
 import Debug.Trace
 import Prelude hiding ((<>))
+import GHC.Stack
 
 type Vec = Vector Double
 data Cell = Cell
@@ -58,7 +60,7 @@ projE n =
     a = dropColumns 1 (ident (n + 1) - 1 / (fromIntegral n + 1)) 
     (u, _, _) = thinSVD a
   in
-  u
+  tr u
 
 mean :: [Double] -> Double
 mean xs = sum xs / fromIntegral (length xs)
@@ -67,9 +69,9 @@ mean xs = sum xs / fromIntegral (length xs)
 standard :: [Double] -> VoronoiCluster
 standard pressures =
   let
-    n = length pressures
+    n = length pressures - 1
     ks = vector pressures - scalar (mean pressures)
-    proj = projE 3
+    proj = projE n
     ks' = proj #> ks
     m = sqrtm (ident n / 2 + ks' `outer` ks')
     m' = tr proj `mul` m
@@ -80,10 +82,6 @@ standard pressures =
 
 dbg :: Show a => a -> a
 dbg x = traceShow x x
-
-dbg' :: Show a => String -> a -> a
-dbg' s x = traceShow (s,x) x
-
 
 -- Find the two points (in the span of x and y) that are fixed distances from two given points.
 fixedDistances :: Vec -> Double -> Vec -> Double -> (Vec, Vec)
@@ -149,6 +147,7 @@ compensator :: Matrix Double -> Matrix Double
 compensator m =
   let (u, _, v) = svd m in u <> tr v
 
+-- Lifts a Voroni Cluster so that its dimension is the same as its number of cells.
 lift :: VoronoiCluster -> VoronoiCluster
 lift cl =
   let
@@ -159,6 +158,17 @@ lift cl =
     if d >= n
     then error "cannot lift, d >= n"
     else [ Cell { center = vjoin [c, zeros], pressure = k } | Cell { center = c, pressure = k } <- cl ]
+
+project :: Matrix Double -> VoronoiCluster -> VoronoiCluster
+project m cl =
+  [ Cell { center = m #> c, pressure = k } | Cell { center = c, pressure = k } <- cl ]
+
+-- firstThree n is the projection from R^n to R^3 that takes the first three coordinates.
+firstThree :: Int -> Matrix Double
+firstThree n =
+  if n < 3
+  then error "n must be at least 3"
+  else fromRows $ take 3 $ toRows $ ident n
 
 gram :: Double -> VoronoiCluster -> VoronoiCluster
 gram t cl' = [ Cell { center = c, pressure = k } | (c, k) <- zip newCenters $ toList ks ]
@@ -217,11 +227,13 @@ data Pov
   | Decl String Pov
 
 class ToPov a where
-  toPov :: a -> Pov
+  toPov :: HasCallStack => a -> Pov
 
 instance ToPov HalfSpace where
   toPov HalfSpace {normal = n', threshold = t'} =
-    Line (printf "plane { <%.3f, %.3f, %.3f>, %.3f }" (n ! 0) (n ! 1) (n ! 2) t)
+    if size n == 3
+    then Line (printf "plane { <%.3f, %.3f, %.3f>, %.3f }" (n ! 0) (n ! 1) (n ! 2) t)
+    else error "wrong dimension"
     where
       n = normalize n'
       t = t' / norm_2 n'

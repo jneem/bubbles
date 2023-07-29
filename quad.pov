@@ -1,5 +1,5 @@
 #include "colors.inc"
-#include "standard.inc"
+#include "quad.inc"
 background { color Cyan }
 camera {
 	location -2.5 * #dir
@@ -20,7 +20,7 @@ object {
 	}
 }
 object {
-  #cl1
+  #cl0
 	texture {
 	  pigment {
 	    checker Red, White
@@ -32,9 +32,21 @@ object {
 	}
 }
 object {
-  #cl2
+  #cl1
 	texture {
 	  pigment { color Green }
+	}
+	finish {
+	  ambient 0.3
+	}
+}
+object {
+  #cl2
+	texture {
+	  pigment {
+	    hexagon Blue, LightBlue, Blue
+		scale 0.002
+	  }
 	}
 	finish {
 	  ambient 0.3
@@ -44,7 +56,7 @@ object {
   #cl3
 	texture {
 	  pigment {
-	    hexagon Blue, LightBlue, Blue
+	    hexagon Yellow, Yellow, Orange
 		scale 0.002
 	  }
 	}
